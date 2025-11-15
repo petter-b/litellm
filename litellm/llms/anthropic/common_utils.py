@@ -167,7 +167,9 @@ class AnthropicModelInfo(BaseLLMModelInfo):
         api_key: Optional[str] = None,
         api_base: Optional[str] = None,
     ) -> Dict:
-        if api_key is None:
+        # Only require API key if Authorization header is not present
+        # This enables OAuth pass-through while maintaining API key fallback
+        if api_key is None and "authorization" not in headers:
             raise litellm.AuthenticationError(
                 message="Missing Anthropic API Key - A call is being made to anthropic but no key is set either in the environment variables or via params. Please set `ANTHROPIC_API_KEY` in your environment vars",
                 llm_provider="anthropic",
@@ -185,18 +187,47 @@ class AnthropicModelInfo(BaseLLMModelInfo):
         user_anthropic_beta_headers = self._get_user_anthropic_beta_headers(
             anthropic_beta_header=headers.get("anthropic-beta")
         )
-        anthropic_headers = self.get_anthropic_headers(
-            computer_tool_used=computer_tool_used,
-            prompt_caching_set=prompt_caching_set,
-            pdf_used=pdf_used,
-            api_key=api_key,
-            file_id_used=file_id_used,
-            is_vertex_request=optional_params.get("is_vertex_request", False),
-            user_anthropic_beta_headers=user_anthropic_beta_headers,
-            mcp_server_used=mcp_server_used,
-        )
 
-        headers = {**headers, **anthropic_headers}
+        # Only get anthropic headers if we have an API key and no Authorization header
+        if api_key and "authorization" not in headers:
+            anthropic_headers = self.get_anthropic_headers(
+                computer_tool_used=computer_tool_used,
+                prompt_caching_set=prompt_caching_set,
+                pdf_used=pdf_used,
+                api_key=api_key,
+                file_id_used=file_id_used,
+                is_vertex_request=optional_params.get("is_vertex_request", False),
+                user_anthropic_beta_headers=user_anthropic_beta_headers,
+                mcp_server_used=mcp_server_used,
+            )
+            headers = {**headers, **anthropic_headers}
+        else:
+            # Still need to add version and beta headers even with OAuth
+            if "anthropic-version" not in headers:
+                headers["anthropic-version"] = "2023-06-01"
+            if "accept" not in headers:
+                headers["accept"] = "application/json"
+            if "content-type" not in headers:
+                headers["content-type"] = "application/json"
+
+            # Add beta headers if needed
+            betas = set()
+            if prompt_caching_set:
+                betas.add("prompt-caching-2024-07-31")
+            if computer_tool_used:
+                beta_header = self.get_computer_tool_beta_header(computer_tool_used)
+                betas.add(beta_header)
+            if file_id_used:
+                betas.add("files-api-2025-04-14")
+                betas.add("code-execution-2025-05-22")
+            if mcp_server_used:
+                betas.add("mcp-client-2025-04-04")
+
+            if user_anthropic_beta_headers is not None:
+                betas.update(user_anthropic_beta_headers)
+
+            if len(betas) > 0 and "anthropic-beta" not in headers:
+                headers["anthropic-beta"] = ",".join(betas)
 
         return headers
 
